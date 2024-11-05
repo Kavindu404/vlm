@@ -93,6 +93,7 @@ def get_gpu_memory():
     return torch.cuda.memory_allocated() / 1e9
 
 def train_epoch(epoch, model, dataloader, optimizer, scheduler, scaler, device, global_step, config):
+
     model.train()
     epoch_metrics = defaultdict(float)
     epoch_start_time = time.time()
@@ -121,6 +122,10 @@ def train_epoch(epoch, model, dataloader, optimizer, scheduler, scaler, device, 
             )
         
         scaler.scale(loss).backward()
+
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         scaler.step(optimizer)
         scaler.update()
         
@@ -223,7 +228,7 @@ def setup_datasets(config, tokenizer):
         
     return train_loader, val_loader
 
-def setup_model(encoder_config, decoder_config, device):
+def setup_model(encoder_config, decoder_config, train_loader, device):
 
     model = MultimodalCaptionGenerator(encoder_config, decoder_config).to(device)
     model = DataParallel(model)
@@ -234,9 +239,12 @@ def setup_model(encoder_config, decoder_config, device):
         weight_decay=decoder_config.weight_decay
     )
     
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 
-        T_max=decoder_config.num_epochs
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=decoder_config.learning_rate,
+        epochs=decoder_config.num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.1  # 10% warmup
     )
     
     scaler = GradScaler()
@@ -267,13 +275,6 @@ def main():
         encoder_config = VisionConfig()
         decoder_config = MultimodalConfig()
         tokenizer = get_tokenizer()
-
-        run_dir = f'runs/base_model_self_attn_sinPos/run_{time.strftime("%Y%m%d_%H%M%S")}'
-
-
-        encoder_config = VisionConfig()
-        decoder_config = MultimodalConfig()
-        tokenizer = get_tokenizer()
         
         wandb.init(
             project= "base_vlm_self_attn_sinPos",
@@ -288,7 +289,7 @@ def main():
         )
         
         train_loader, val_loader = setup_datasets(decoder_config, tokenizer)
-        model, optimizer, scheduler, scaler = setup_model(encoder_config, decoder_config, device)
+        model, optimizer, scheduler, scaler = setup_model(encoder_config, decoder_config, train_loader, device)
         
         start_epoch, global_step, best_loss = load_checkpoint(
             run_dir,

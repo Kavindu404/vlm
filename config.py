@@ -29,7 +29,7 @@ class MultimodalConfig:
         self.num_image_tokens = 196
         self.num_text_tokens = 196
 
-        self.learning_rate = 1e-3
+        self.learning_rate = 1e-4
         self.weight_decay = 0.5
         self.num_epochs = 100000
         
