@@ -3,3 +3,4 @@ runs/
 .venv/
 __pycache__/
 attention_mask.png
+wandb/
