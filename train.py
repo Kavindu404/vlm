@@ -388,5 +388,5 @@ def main():
 
     dist.destroy_process_group()
 
-if __name__== "main":
+if __name__== "__main__":
     main()
