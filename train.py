@@ -117,7 +117,7 @@ def train_epoch(epoch, model, dataloader, optimizer, scheduler, scaler, device, 
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)), # reshaping to [batch_sz*seq_len, vocab_size]
                 labels.view(-1), # reshaping to [batch_sz*seq_len]
-                ignore_index=config.pad_token_id
+                ignore_index=config.padding_idx
             )
         
         scaler.scale(loss).backward()
@@ -174,7 +174,7 @@ def load_checkpoint(run_dir, model, optimizer, scheduler, scaler):
     
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
-        model.module.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if scheduler and checkpoint['scheduler_state_dict']:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
@@ -301,7 +301,7 @@ def main():
         training_start_time = time.time()
         
         for epoch in range(start_epoch, decoder_config.num_epochs):
-            
+
             metrics = train_epoch(
                 epoch, model, train_loader, optimizer, 
                 scheduler, scaler, device, global_step, decoder_config
@@ -324,7 +324,7 @@ def main():
             checkpoint = {
                 'epoch': epoch,
                 'global_step': global_step,
-                'model_state_dict': model.module.state_dict(),
+                'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                 'scaler_state_dict': scaler.state_dict(),

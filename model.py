@@ -14,6 +14,7 @@ class MultimodalCaptionGenerator(nn.Module):
         self.output_projection = nn.Linear(decoder_config.hidden_size, decoder_config.vocab_size)
     
     def _merge_input_embeds(self, image_embeds, text_embeds):
+        
         batch_size = image_embeds.shape[0]
         num_image_tokens = image_embeds.shape[1]
         num_text_tokens = text_embeds.shape[1]
@@ -25,9 +26,9 @@ class MultimodalCaptionGenerator(nn.Module):
 
         # Note that all the features of the padding token is 0 from the Embedding look-up table
         # This mask is of shape [batch_size, num_text_tokens]
-        text_pad_mask = (text_embeds.sum(dim=-1) != 0).bool()
+        text_pad_mask = (text_embeds.sum(dim=-1) != 0).bool().to(image_embeds.device)
         # Now we need the causal mask for the text generation part
-        text_causal_mask = torch.tril(torch.ones((num_text_tokens, num_text_tokens))).bool()
+        text_causal_mask = torch.tril(torch.ones((num_text_tokens, num_text_tokens), device=image_embeds.device)).bool()
 
         attention_mask[:, num_image_tokens:, num_image_tokens:] = text_pad_mask.unsqueeze(-1) & text_causal_mask
         attention_mask = attention_mask.float()
@@ -60,4 +61,3 @@ class MultimodalCaptionGenerator(nn.Module):
         return logits, attention_scores
 
     
-

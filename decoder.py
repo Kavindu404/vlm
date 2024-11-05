@@ -102,7 +102,7 @@ class DecoderAttention(nn.Module):
             )
         if mask is not None:
             mask = mask.unsqueeze(1)
-            attention_w.masked_fill_(mask==0, -1e9)
+            attention_w.masked_fill_(mask==0, -1e4)
 
         # We can use this for visualization later
         attention_scores = nn.functional.softmax(attention_w, dim=-1, dtype=torch.float32).to(wq.dtype)
@@ -178,5 +178,3 @@ class MultimodalProjector(nn.Module):
     def forward(self, x):
 
         return self.multimodal_proj_layer(x)
-
-
