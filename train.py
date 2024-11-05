@@ -25,8 +25,8 @@ from preprocess import get_tokenizer
 
 def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config):
     model.eval()
-    fixed_batch_idx = 0 
-    fixed_sample_idx = 0
+    fixed_batch_idx = 2 
+    fixed_sample_idx = 5
     
     artifact_dir = Path(f'artifacts/epoch_{epoch}')
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -66,8 +66,8 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                     num_heads = attention_map.size(0)
                     for head in range(num_heads):
                         # we take the attention_score for the image tokens of the last token added
-                        token_attention = attention_map[head][-1, :num_img_tokens] 
-                        h, w = int(np.sqrt(num_img_tokens))
+                        token_attention = attention_maps[head][-1][-1, :num_img_tokens] 
+                        h = w = int(np.sqrt(num_img_tokens))
                         token_attention = rearrange(token_attention, '(h w) -> h w', h=h, w=w)
 
                         token_attention = torch.tensor(token_attention).unsqueeze(0).unsqueeze(0)  # add batch and channel dims [1, 1, 14, 14]
@@ -310,7 +310,7 @@ def main():
             global_step = metrics['global_step']
 
             if val_loader:
-                if epoch % 2 == 0:
+                if epoch % 10 == 0:
                     validate(
                         epoch= epoch,
                         model= model,

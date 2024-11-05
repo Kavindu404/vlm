@@ -43,7 +43,7 @@ class TestMultimodalCaptionGenerator():
         text = torch.randint(0, 1000, (batch_size, seq_len))
         
         output, attention_scores = model(text, img)
-        
+
         
         self.assertEqual(output.shape, (batch_size, seq_len, decoder_config.vocab_size))
 

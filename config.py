@@ -35,8 +35,8 @@ class MultimodalConfig:
         
         self.train_image_dir = "/unity/g1/kgalla/datasets/train2014/"
         self.train_h5_path = "/unity/g1/kgalla/datasets/annotations/train/coco_train2014_captions.h5"
-        self.batch_size = 64
-        self.num_workers = 8
+        self.batch_size = 128
+        self.num_workers = 16
 
         self.val_image_dir = "/unity/g1/kgalla/datasets/val2014/"
         self.val_h5_path = "/unity/g1/kgalla/datasets/annotations/val/coco_val2014_captions.h5"
