@@ -23,7 +23,7 @@ from model import MultimodalCaptionGenerator
 from config import VisionConfig, MultimodalConfig
 from preprocess import get_tokenizer
 
-def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config):
+def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table):
 
     model.eval()
     val_metrics = defaultdict(float)
@@ -33,12 +33,9 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 
     pbar = tqdm(total=num_batches, desc=f'Val Epoch {epoch}')
     
-    artifact_dir = Path(f'artifacts/epoch_{epoch}')
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    
     with torch.no_grad():
 
-        for batch_idx, batch in enumerate(tqdm(val_loader, desc="Validating")):
+        for batch_idx, batch in enumerate(val_loader):
 
             images = batch['image'].to(device)
             tokens = batch['tokens'].to(device)
@@ -63,11 +60,17 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
             })
 
             if batch_idx == fixed_batch_idx and epoch%10==0:
+
+                artifact_dir = Path(f'artifacts/base_model_self_attn_sinPos_val_v1/epoch_{epoch}')
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+
                 image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
                 tokens = torch.tensor([[config.sos_token_id]]).to(device)
                 generated_tokens = [config.sos_token_id]
                 attention_maps = []
                 
+                print(f"Saving artifacts...")
+
                 for _ in range(config.max_len):
                     logits, attention_scores = model(tokens, image)
 
@@ -81,9 +84,10 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                     
                     tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
                 
-                caption = tokenizer.decode(generated_tokens[1:-1])  # Remove SOS and EOS
+                caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
+                caption_table.add_data(epoch, caption)
                 wandb.log({
-                    f'val/example_caption': caption,
+                    f'val/caption': caption,
                     'epoch': epoch
                 })
 
@@ -122,7 +126,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                             pad_inches=0
                         )
                         plt.close()
-                        
+
     pbar.close()
     val_metrics['loss'] /= num_batches
     wandb.log({
@@ -313,15 +317,17 @@ def main():
         print("Starting initialization...")
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos/run_{time.strftime("%Y%m%d_%H%M%S")}'
+        run_dir = f'runs/base_model_self_attn_sinPos_val_v1/run_{time.strftime("%Y%m%d_%H%M%S")}'
+        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v1'
         os.makedirs(run_dir, exist_ok=True)
+        os.makedirs(artifcats_dir, exist_ok=True)
         
         encoder_config = VisionConfig()
         decoder_config = MultimodalConfig()
         tokenizer = get_tokenizer()
         
         wandb.init(
-            project= "base_vlm_self_attn_sinPos",
+            project= "base_vlm_self_attn_sinPos_val_v1",
             config={
                 "learning_rate": decoder_config.learning_rate,
                 "batch_size": decoder_config.batch_size,
@@ -355,6 +361,9 @@ def main():
             global_step = metrics['global_step']
 
             if val_loader:
+
+                caption_table = wandb.Table(columns=["epoch", "image_id", "generated_caption"])
+
                 val_metrics = validate(
                                     epoch= epoch,
                                     model= model,
@@ -362,7 +371,8 @@ def main():
                                     tokenizer= tokenizer,
                                     device=device,
                                     num_img_tokens= (encoder_config.img_sz // encoder_config.patch_sz) ** 2,
-                                    config= decoder_config
+                                    config= decoder_config,
+                                    caption_table= caption_table
                             )
             
             checkpoint = {
@@ -386,8 +396,10 @@ def main():
             
             wandb.log({
                 'train/loss': metrics['loss'],
+                'val/loss': val_metrics['loss'],
                 'train/epoch_time': metrics['epoch_time'],
                 'train/gpu_memory': metrics['gpu_memory'],
+                'val/gpu_memory': val_metrics['gpu_memory'],
                 'epoch': epoch,
                 'global_step': global_step,
                 'learning_rate': optimizer.param_groups[0]['lr']
