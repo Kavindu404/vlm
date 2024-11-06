@@ -24,7 +24,10 @@ from config import VisionConfig, MultimodalConfig
 from preprocess import get_tokenizer
 
 def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config):
+
     model.eval()
+    val_metrics = defaultdict(float)
+    num_batches = len(val_loader)
     fixed_batch_idx = 2 
     fixed_sample_idx = 5
     
@@ -32,8 +35,25 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
     artifact_dir.mkdir(parents=True, exist_ok=True)
     
     with torch.no_grad():
-        for batch_idx, batch in enumerate(val_loader):
-            if batch_idx == fixed_batch_idx:
+
+        for batch_idx, batch in enumerate(tqdm(val_loader, desc="Validating")):
+
+            images = batch['image'].to(device)
+            tokens = batch['tokens'].to(device)
+            
+            logits, _ = model(tokens, images)
+            labels = tokens[:, 1:].contiguous()
+            logits = logits[:, config.num_image_tokens:-1, :].contiguous()
+            
+            loss = torch.nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                labels.view(-1),
+                ignore_index=config.padding_idx
+            )
+            
+            val_metrics['loss'] += loss.item()
+
+            if batch_idx == fixed_batch_idx and epoch%10==0:
                 image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
                 tokens = torch.tensor([[config.sos_token_id]]).to(device)
                 generated_tokens = [config.sos_token_id]
@@ -51,6 +71,12 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                         break
                     
                     tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
+                
+                caption = tokenizer.decode(generated_tokens[1:-1])  # Remove SOS and EOS
+                wandb.log({
+                    f'val/example_caption': caption,
+                    'epoch': epoch
+                })
 
                 orig_image = batch['image'][fixed_sample_idx].cpu()
                 mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
@@ -87,7 +113,15 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                             pad_inches=0
                         )
                         plt.close()
-                break
+
+    val_metrics['loss'] /= num_batches
+    wandb.log({
+        'val/loss': val_metrics['loss'],
+        'epoch': epoch
+    })
+
+    return val_metrics
+
 
 def get_gpu_memory():
     return torch.cuda.memory_allocated() / 1e9
@@ -311,16 +345,15 @@ def main():
             global_step = metrics['global_step']
 
             if val_loader:
-                if epoch % 10 == 0:
-                    validate(
-                        epoch= epoch,
-                        model= model,
-                        val_loader= val_loader,
-                        tokenizer= tokenizer,
-                        device=device,
-                        num_img_tokens= (encoder_config.img_sz // encoder_config.patch_sz) ** 2,
-                        config= decoder_config
-                    )
+                val_metrics = validate(
+                                    epoch= epoch,
+                                    model= model,
+                                    val_loader= val_loader,
+                                    tokenizer= tokenizer,
+                                    device=device,
+                                    num_img_tokens= (encoder_config.img_sz // encoder_config.patch_sz) ** 2,
+                                    config= decoder_config
+                            )
             
             checkpoint = {
                 'epoch': epoch,
@@ -334,9 +367,9 @@ def main():
                 "encoder_config": encoder_config.__dict__
             }
             
-            is_best = metrics['loss'] < best_loss
+            is_best = val_metrics['loss'] < best_loss
             if is_best:
-                best_loss = metrics['loss']
+                best_loss = val_metrics['loss']
 
             
             save_checkpoint(checkpoint, is_best, run_dir)
