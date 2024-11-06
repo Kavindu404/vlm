@@ -30,6 +30,8 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
     num_batches = len(val_loader)
     fixed_batch_idx = 2 
     fixed_sample_idx = 5
+
+    pbar = tqdm(total=num_batches, desc=f'Val Epoch {epoch}')
     
     artifact_dir = Path(f'artifacts/epoch_{epoch}')
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,13 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
             )
             
             val_metrics['loss'] += loss.item()
+            current_val_loss = val_metrics['loss'] / (batch_idx + 1)
+
+            pbar.update(1)
+            pbar.set_postfix({
+                'val_loss': f'{current_val_loss:.4f}',
+                'gpu_mem': f'{get_gpu_memory():.2f}GB'
+            })
 
             if batch_idx == fixed_batch_idx and epoch%10==0:
                 image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
@@ -113,7 +122,8 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                             pad_inches=0
                         )
                         plt.close()
-
+                        
+    pbar.close()
     val_metrics['loss'] /= num_batches
     wandb.log({
         'val/loss': val_metrics['loss'],
@@ -181,7 +191,7 @@ def train_epoch(epoch, model, dataloader, optimizer, scheduler, scaler, device, 
         
         pbar.update(1)
         pbar.set_postfix({
-            'loss': f'{loss.item():.4f}', 
+            'train_loss': f'{loss.item():.4f}', 
             'gpu_mem': f'{current_mem:.2f}GB',
             'step': global_step
         })
