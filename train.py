@@ -140,7 +140,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 def get_gpu_memory():
     return torch.cuda.memory_allocated() / 1e9
 
-def train_epoch(epoch, model, dataloader, optimizer, scheduler, scaler, device, global_step, config):
+def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scaler, device, global_step, config, tokenizer):
 
     model.train()
     epoch_metrics = defaultdict(float)
@@ -176,40 +176,56 @@ def train_epoch(epoch, model, dataloader, optimizer, scheduler, scaler, device, 
 
         scaler.step(optimizer)
         scaler.update()
-        
+
         if scheduler is not None:
             scheduler.step()
             current_lr = scheduler.get_last_lr()[0]
         else:
             current_lr = optimizer.param_groups[0]['lr']
-            
+
         batch_time = time.time() - batch_start_time
         current_mem = get_gpu_memory()
-        
-        epoch_metrics['loss'] += loss.item()
-        epoch_metrics['batch_time'] += batch_time
-        epoch_metrics['gpu_memory'] += current_mem
-        epoch_metrics['learning_rate'] = current_lr
-        
-        global_step += 1
-        
+    
         pbar.update(1)
         pbar.set_postfix({
             'train_loss': f'{loss.item():.4f}', 
             'gpu_mem': f'{current_mem:.2f}GB',
             'step': global_step
         })
-        
-        if batch_idx % 10 == 0:
-            wandb.log({
-                'batch/loss': loss.item(),
-                'batch/learning_rate': current_lr,
-                'batch/time_per_batch': batch_time,
-                'batch/gpu_memory': current_mem,
-                'global_step': global_step
-            })
-    
     pbar.close()
+
+    val_metrics = None
+
+    if val_loader:
+
+        caption_table = wandb.Table(columns=["epoch", "generated_caption"])
+
+        val_metrics = validate(
+                            epoch= epoch,
+                            model= model,
+                            val_loader= val_loader,
+                            tokenizer= tokenizer,
+                            device=device,
+                            num_img_tokens= config.num_image_tokens,
+                            config= config,
+                            caption_table= caption_table
+                    )
+ 
+    epoch_metrics['loss'] += loss.item()
+    epoch_metrics['batch_time'] += batch_time
+    epoch_metrics['gpu_memory'] += current_mem
+    epoch_metrics['learning_rate'] = current_lr
+    
+    global_step += 1
+    
+    if batch_idx % 10 == 0:
+        wandb.log({
+            'batch/loss': loss.item(),
+            'batch/learning_rate': current_lr,
+            'batch/time_per_batch': batch_time,
+            'batch/gpu_memory': current_mem,
+            'global_step': global_step
+        })
     
     epoch_metrics['loss'] /= num_batches
     epoch_metrics['batch_time'] /= num_batches
@@ -219,13 +235,16 @@ def train_epoch(epoch, model, dataloader, optimizer, scheduler, scaler, device, 
     epoch_metrics['memory_increase'] = get_gpu_memory() - start_mem
     epoch_metrics['global_step'] = global_step
     
-    return epoch_metrics
+    return epoch_metrics, val_metrics
 
 def load_checkpoint(run_dir, model, optimizer, scheduler, scaler):
 
     checkpoint_path = os.path.join(run_dir, 'checkpoints', 'latest_model.pt')
     
     if os.path.exists(checkpoint_path):
+
+        print("Loading from the latest checkpoint ...")
+        
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -236,7 +255,9 @@ def load_checkpoint(run_dir, model, optimizer, scheduler, scaler):
         global_step = checkpoint['global_step']
         best_loss = checkpoint['best_loss']
         print(f"Resuming from epoch {start_epoch}, global_step {global_step}")
+
         return start_epoch, global_step, best_loss
+    
     return 0, 0, float('inf')
 
 def setup_datasets(config, tokenizer):
@@ -317,8 +338,8 @@ def main():
         print("Starting initialization...")
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos_val_v1/run_{time.strftime("%Y%m%d_%H%M%S")}'
-        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v1'
+        run_dir = f'runs/base_model_self_attn_sinPos_val_v2_1'
+        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v2_1'
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
@@ -327,7 +348,7 @@ def main():
         tokenizer = get_tokenizer()
         
         wandb.init(
-            project= "base_vlm_self_attn_sinPos_val_v1",
+            project= "base_vlm_self_attn_sinPos_val_v2_1",
             config={
                 "learning_rate": decoder_config.learning_rate,
                 "batch_size": decoder_config.batch_size,
@@ -349,31 +370,15 @@ def main():
             scaler
         )
         
-        training_start_time = time.time()
-        
         for epoch in range(start_epoch, decoder_config.num_epochs):
 
-            metrics = train_epoch(
-                epoch, model, train_loader, optimizer, 
-                scheduler, scaler, device, global_step, decoder_config
+            metrics, val_metrics = train_epoch(
+                epoch, model, train_loader, val_loader, optimizer, 
+                scheduler, scaler, device, global_step, 
+                decoder_config, tokenizer
             )
             
             global_step = metrics['global_step']
-
-            if val_loader:
-
-                caption_table = wandb.Table(columns=["epoch", "image_id", "generated_caption"])
-
-                val_metrics = validate(
-                                    epoch= epoch,
-                                    model= model,
-                                    val_loader= val_loader,
-                                    tokenizer= tokenizer,
-                                    device=device,
-                                    num_img_tokens= (encoder_config.img_sz // encoder_config.patch_sz) ** 2,
-                                    config= decoder_config,
-                                    caption_table= caption_table
-                            )
             
             checkpoint = {
                 'epoch': epoch,
