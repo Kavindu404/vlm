@@ -61,7 +61,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 
             if batch_idx == fixed_batch_idx and epoch%10==0:
 
-                artifact_dir = Path(f'artifacts/base_model_self_attn_sinPos_val_v1/epoch_{epoch}')
+                artifact_dir = Path(f'artifacts/base_model_self_attn_sinPos_val_v2_1/epoch_{epoch}')
                 artifact_dir.mkdir(parents=True, exist_ok=True)
 
                 image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
@@ -87,8 +87,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                 caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
                 caption_table.add_data(epoch, caption)
                 wandb.log({
-                    f'val/caption': caption,
-                    'epoch': epoch
+                    f'val/caption': caption_table
                 })
 
                 orig_image = batch['image'][fixed_sample_idx].cpu()
