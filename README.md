@@ -92,7 +92,9 @@ Note that, you can preprocess your data to create the .h5 file with preprocess.p
 The model is trained on the MSCOCO dataset. Preprocessing scripts are included to:
 
 Tokenize captions: We used the Tiktoken(gpt2) tokenizer from OpenAI
+
 Create H5 files for efficient loading
+
 Handle special tokens (SOS, EOS, PAD)
 
 
