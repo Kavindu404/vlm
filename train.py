@@ -24,6 +24,9 @@ from model import MultimodalCaptionGenerator
 from config import VisionConfig, MultimodalConfig
 from preprocess import get_tokenizer
 
+import torch.backends.cudnn as cudnn
+cudnn.benchmark = True
+
 def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table):
 
     model.eval()
@@ -273,7 +276,8 @@ def setup_datasets(config, tokenizer):
         batch_size= config.batch_size,
         shuffle= True,
         num_workers= config.num_workers,
-        pin_memory= True
+        pin_memory= True,
+        persistent_workers=True
     )
     
     if hasattr(config, 'val_image_dir') and hasattr(config, 'val_h5_path'):
@@ -289,7 +293,8 @@ def setup_datasets(config, tokenizer):
             batch_size= config.batch_size,
             shuffle= False,
             num_workers= config.num_workers,
-            pin_memory= True
+            pin_memory= True,
+            persistent_workers=True
         )
     else:
         val_loader = None
@@ -300,6 +305,13 @@ def setup_model(encoder_config, decoder_config, train_loader, device):
 
     model = MultimodalCaptionGenerator(encoder_config, decoder_config).to(device)
     model = DataParallel(model)
+    model = torch.compile(
+                model,
+                mode='dafult',
+                fullgraph=True, 
+                dynamic=True,   
+                verbose=True     
+            )
     
     optimizer = torch.optim.AdamW(
         model.parameters(),
