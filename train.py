@@ -27,7 +27,7 @@ from preprocess import get_tokenizer
 import torch.backends.cudnn as cudnn
 cudnn.benchmark = True
 
-def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table):
+def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table, artifact_dir):
 
     model.eval()
     val_metrics = defaultdict(float)
@@ -51,6 +51,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 labels.view(-1),
+                label_smoothing=0.1,
                 ignore_index=config.padding_idx
             )
             
@@ -65,10 +66,11 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 
             if batch_idx == fixed_batch_idx and epoch%10==0:
 
-                artifact_dir = Path(f'artifacts/base_model_self_attn_sinPos_val_v3/epoch_{epoch}')
-                artifact_dir.mkdir(parents=True, exist_ok=True)
+                epoch_dir = os.path.join(artifact_dir, f'epoch_{epoch}')
+                Path(epoch_dir).mkdir(parents=True, exist_ok=True)
 
                 image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
+                label = batch['tokens'][fixed_sample_idx:fixed_sample_idx+1].to(device)
                 tokens = torch.tensor([[config.sos_token_id]]).to(device)
                 generated_tokens = [config.sos_token_id]
                 attention_maps = []
@@ -89,7 +91,8 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                     tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
                 
                 caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
-                caption_table.add_data(epoch, caption)
+                act_caption = tokenizer.decode(label[1:-1])
+                caption_table.add_data(epoch, caption, act_caption)
                 wandb.log({
                     f'val/caption': caption_table
                 })
@@ -101,6 +104,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                 orig_image = orig_image.permute(1, 2, 0).numpy()
                 
                 for idx, (token_id, attention_map) in enumerate(zip(generated_tokens[1:], attention_maps)):
+                    
                     if token_id == config.eos_token_id:
                         break
                     token_text = tokenizer.decode([token_id])
@@ -143,7 +147,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 def get_gpu_memory():
     return torch.cuda.memory_allocated() / 1e9
 
-def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scaler, device, global_step, config, tokenizer):
+def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scaler, device, global_step, config, tokenizer, artifact_dir):
 
     model.train()
     epoch_metrics = defaultdict(float)
@@ -202,7 +206,7 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
 
     if val_loader:
 
-        caption_table = wandb.Table(columns=["epoch", "generated_caption"])
+        caption_table = wandb.Table(columns=["epoch", "generated_caption", "actual_caption"])
 
         val_metrics = validate(
                             epoch= epoch,
@@ -212,7 +216,8 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
                             device=device,
                             num_img_tokens= config.num_image_tokens,
                             config= config,
-                            caption_table= caption_table
+                            caption_table= caption_table,
+                            artifact_dir= artifact_dir
                     )
  
     epoch_metrics['loss'] += loss.item()
@@ -349,8 +354,8 @@ def main():
         print("Starting initialization...")
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos_val_v4'
-        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v4'
+        run_dir = f'runs/base_model_self_attn_sinPos_val_v5'
+        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v5'
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
@@ -359,7 +364,7 @@ def main():
         tokenizer = get_tokenizer()
         
         wandb.init(
-            project= "base_vlm_self_attn_sinPos_val_v4",
+            project= "base_vlm_self_attn_sinPos_val_v5",
             config={
                 "learning_rate": decoder_config.learning_rate,
                 "batch_size": decoder_config.batch_size,
@@ -386,7 +391,7 @@ def main():
             metrics, val_metrics = train_epoch(
                 epoch, model, train_loader, val_loader, optimizer, 
                 scheduler, scaler, device, global_step, 
-                decoder_config, tokenizer
+                decoder_config, tokenizer, artifcats_dir
             )
             
             global_step = metrics['global_step']
