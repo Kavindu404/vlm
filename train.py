@@ -27,119 +27,131 @@ from preprocess import get_tokenizer
 import torch.backends.cudnn as cudnn
 cudnn.benchmark = True
 
+from contextlib import contextmanager
+import torch._dynamo
+
+@contextmanager
+def no_compile():
+    torch._dynamo.config.disable = True
+    try:
+        yield
+    finally:
+        torch._dynamo.config.disable = False
+
 def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table, artifact_dir):
 
-    model.eval()
-    val_metrics = defaultdict(float)
-    num_batches = len(val_loader)
-    fixed_batch_idx = 2 
-    fixed_sample_idx = 5
+    with no_compile():
+        model.eval()
+        val_metrics = defaultdict(float)
+        num_batches = len(val_loader)
+        fixed_batch_idx = 2 
+        fixed_sample_idx = 5
 
-    pbar = tqdm(total=num_batches, desc=f'Val Epoch {epoch}')
-    
-    with torch.no_grad():
+        pbar = tqdm(total=num_batches, desc=f'Val Epoch {epoch}')
+        
+        with torch.no_grad():
 
-        for batch_idx, batch in enumerate(val_loader):
+            for batch_idx, batch in enumerate(val_loader):
 
-            images = batch['image'].to(device)
-            tokens = batch['tokens'].to(device)
-            
-            logits, _ = model(tokens, images)
-            labels = tokens[:, 1:].contiguous()
-            logits = logits[:, config.num_image_tokens:-1, :].contiguous()
-            
-            loss = torch.nn.functional.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                labels.view(-1),
-                label_smoothing=0.1,
-                ignore_index=config.padding_idx
-            )
-            
-            val_metrics['loss'] += loss.item()
-            current_val_loss = val_metrics['loss'] / (batch_idx + 1)
-
-            pbar.update(1)
-            pbar.set_postfix({
-                'val_loss': f'{current_val_loss:.6f}',
-                'gpu_mem': f'{get_gpu_memory():.2f}GB'
-            })
-
-            if batch_idx == fixed_batch_idx and epoch%10==0:
-
-                epoch_dir = os.path.join(artifact_dir, f'epoch_{epoch}')
-                Path(epoch_dir).mkdir(parents=True, exist_ok=True)
-
-                image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
-                label = batch['tokens'][fixed_sample_idx:fixed_sample_idx+1].to(device)
-                tokens = torch.tensor([[config.sos_token_id]]).to(device)
-                generated_tokens = [config.sos_token_id]
-                attention_maps = []
+                images = batch['image'].to(device)
+                tokens = batch['tokens'].to(device)
                 
-                print(f"Saving artifacts...")
-
-                for _ in range(config.max_len):
-                    logits, attention_scores = model(tokens, image)
-
-                    next_token = logits[0, -1].argmax(dim=-1) # We follow a greedy approach where we get the token with the max prob
-                    generated_tokens.append(next_token.item())
-
-                    attention_maps.append(attention_scores[-1].cpu()) # We take the attention map of only the first element of the batch
-
-                    if next_token.item() == config.eos_token_id:
-                        break
-                    
-                    tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
+                logits, _ = model(tokens, images)
+                labels = tokens[:, 1:].contiguous()
+                logits = logits[:, config.num_image_tokens:-1, :].contiguous()
                 
-                actual_tokens = []
-                for token in label[0].cpu().tolist(): 
-                    if token == config.eos_token_id:
-                        break
-                    if token not in [config.padding_idx, config.sos_token_id]:
-                        actual_tokens.append(token)
+                loss = torch.nn.functional.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    labels.view(-1),
+                    label_smoothing=0.1,
+                    ignore_index=config.padding_idx
+                )
                 
-                caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
-                act_caption = tokenizer.decode(actual_tokens)
-                caption_table.add_data(epoch, caption, act_caption)
-                wandb.log({
-                    f'val/caption': caption_table
+                val_metrics['loss'] += loss.item()
+                current_val_loss = val_metrics['loss'] / (batch_idx + 1)
+
+                pbar.update(1)
+                pbar.set_postfix({
+                    'val_loss': f'{current_val_loss:.6f}',
+                    'gpu_mem': f'{get_gpu_memory():.2f}GB'
                 })
 
-                orig_image = batch['image'][fixed_sample_idx].cpu()
-                mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-                std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-                orig_image = orig_image * std + mean
-                orig_image = orig_image.permute(1, 2, 0).numpy()
-                
-                for idx, (token_id, attention_map) in enumerate(zip(generated_tokens[1:], attention_maps)):
+                if batch_idx == fixed_batch_idx and epoch%10==0:
 
-                    if token_id == config.eos_token_id:
-                        break
-                    token_text = tokenizer.decode([token_id])
+                    epoch_dir = os.path.join(artifact_dir, f'epoch_{epoch}')
+                    Path(epoch_dir).mkdir(parents=True, exist_ok=True)
+
+                    image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
+                    label = batch['tokens'][fixed_sample_idx:fixed_sample_idx+1].to(device)
+                    tokens = torch.tensor([[config.sos_token_id]]).to(device)
+                    generated_tokens = [config.sos_token_id]
+                    attention_maps = []
                     
-                    num_heads = attention_map.size(0)
-                    for head in range(num_heads):
-                        # we take the attention_score for the image tokens of the last token added
-                        token_attention = attention_maps[head][-1][-1, :num_img_tokens] 
-                        h = w = int(np.sqrt(num_img_tokens))
-                        token_attention = rearrange(token_attention, '(h w) -> h w', h=h, w=w)
+                    print(f"Saving artifacts...")
 
-                        token_attention = torch.tensor(token_attention).unsqueeze(0).unsqueeze(0)  # add batch and channel dims [1, 1, 14, 14]
-                        # We upsample the attention map from 14x14 -> 224x224. Note that we have 14x14 patches and attention score for each patch
-                        attention_map = F.interpolate(token_attention, size=(224, 224), mode='bilinear', align_corners=False)
-                        attention_map = attention_map.squeeze().numpy() 
+                    for _ in range(config.max_len):
+                        logits, attention_scores = model(tokens, image)
+
+                        next_token = logits[0, -1].argmax(dim=-1) # We follow a greedy approach where we get the token with the max prob
+                        generated_tokens.append(next_token.item())
+
+                        attention_maps.append(attention_scores[-1].cpu()) # We take the attention map of only the first element of the batch
+
+                        if next_token.item() == config.eos_token_id:
+                            break
                         
-                        plt.figure(figsize=(10, 10))
-                        plt.imshow(orig_image)
-                        plt.imshow(attention_map, alpha=0.5, cmap='viridis')
-                        plt.title(f'{token_text} - Head {head}')
-                        plt.axis('off')
+                        tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
+                    
+                    actual_tokens = []
+                    for token in label[0].cpu().tolist(): 
+                        if token == config.eos_token_id:
+                            break
+                        if token not in [config.padding_idx, config.sos_token_id]:
+                            actual_tokens.append(token)
+                    
+                    caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
+                    act_caption = tokenizer.decode(actual_tokens)
+                    caption_table.add_data(epoch, caption, act_caption)
+                    wandb.log({
+                        f'val/caption': caption_table
+                    })
+
+                    orig_image = batch['image'][fixed_sample_idx].cpu()
+                    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+                    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+                    orig_image = orig_image * std + mean
+                    orig_image = orig_image.permute(1, 2, 0).numpy()
+                    
+                    for idx, (token_id, attention_map) in enumerate(zip(generated_tokens[1:], attention_maps)):
+
+                        if token_id == config.eos_token_id:
+                            break
+                        token_text = tokenizer.decode([token_id])
                         
-                        plt.savefig(
-                            epoch_dir / f'{idx}_{token_text}_head_{head}.png',
-                            bbox_inches='tight',
-                            pad_inches=0
-                        )
-                        plt.close()
+                        num_heads = attention_map.size(0)
+                        for head in range(num_heads):
+                            # we take the attention_score for the image tokens of the last token added
+                            token_attention = attention_maps[head][-1][-1, :num_img_tokens] 
+                            h = w = int(np.sqrt(num_img_tokens))
+                            token_attention = rearrange(token_attention, '(h w) -> h w', h=h, w=w)
+
+                            token_attention = torch.tensor(token_attention).unsqueeze(0).unsqueeze(0)  # add batch and channel dims [1, 1, 14, 14]
+                            # We upsample the attention map from 14x14 -> 224x224. Note that we have 14x14 patches and attention score for each patch
+                            attention_map = F.interpolate(token_attention, size=(224, 224), mode='bilinear', align_corners=False)
+                            attention_map = attention_map.squeeze().numpy() 
+                            
+                            plt.figure(figsize=(10, 10))
+                            plt.imshow(orig_image)
+                            plt.imshow(attention_map, alpha=0.5, cmap='viridis')
+                            plt.title(f'{token_text} - Head {head}')
+                            plt.axis('off')
+                            
+                            plt.savefig(
+                                os.path.join(epoch_dir, f'{idx}_{token_text}_head_{head}.png'),
+                                bbox_inches='tight',
+                                pad_inches=0
+                            )
+                            plt.close()
 
     pbar.close()
     val_metrics['loss'] /= num_batches
@@ -361,8 +373,8 @@ def main():
         print("Starting initialization...")
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos_val_v5'
-        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v5'
+        run_dir = f'runs/base_model_self_attn_sinPos_val_v6'
+        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v6'
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
@@ -371,7 +383,7 @@ def main():
         tokenizer = get_tokenizer()
         
         wandb.init(
-            project= "base_vlm_self_attn_sinPos_val_v5",
+            project= "base_vlm_self_attn_sinPos_val_v6",
             config={
                 "learning_rate": decoder_config.learning_rate,
                 "batch_size": decoder_config.batch_size,
