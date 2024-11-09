@@ -3,6 +3,7 @@ from pathlib import Path
 import time
 import torch
 import wandb
+import traceback
 
 import torch.distributed as dist
 import numpy as np
@@ -61,7 +62,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 
             if batch_idx == fixed_batch_idx and epoch%10==0:
 
-                artifact_dir = Path(f'artifacts/base_model_self_attn_sinPos_val_v2_1/epoch_{epoch}')
+                artifact_dir = Path(f'artifacts/base_model_self_attn_sinPos_val_v3/epoch_{epoch}')
                 artifact_dir.mkdir(parents=True, exist_ok=True)
 
                 image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
@@ -120,7 +121,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                         plt.axis('off')
                         
                         plt.savefig(
-                            artifact_dir / f'{token_text}_head_{head}.png',
+                            artifact_dir / f'{idx}_{token_text}_head_{head}.png',
                             bbox_inches='tight',
                             pad_inches=0
                         )
@@ -217,14 +218,13 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
     
     global_step += 1
     
-    if batch_idx % 10 == 0:
-        wandb.log({
+    wandb.log({
             'batch/loss': loss.item(),
             'batch/learning_rate': current_lr,
             'batch/time_per_batch': batch_time,
             'batch/gpu_memory': current_mem,
             'global_step': global_step
-        })
+    })
     
     epoch_metrics['loss'] /= num_batches
     epoch_metrics['batch_time'] /= num_batches
@@ -337,8 +337,8 @@ def main():
         print("Starting initialization...")
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos_val_v2_1'
-        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v2_1'
+        run_dir = f'runs/base_model_self_attn_sinPos_val_v3'
+        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v3'
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
@@ -411,7 +411,6 @@ def main():
 
     except Exception as e:
         print(f"Error")
-        import traceback
         traceback.print_exc()
         raise
 

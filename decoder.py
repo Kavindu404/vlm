@@ -76,6 +76,8 @@ class DecoderAttention(nn.Module):
         self.hidden_size = config.hidden_size
         self.head_dim = self.hidden_size // self.num_heads
         self.scale = self.head_dim ** -0.5 
+        self.attn_dropout = nn.Dropout(config.attention_dropout)
+        self.output_dropout = nn.Dropout(config.dropout_prob)
 
         self.q_proj = nn.Linear(self.hidden_size, self.hidden_size)
         self.k_proj = nn.Linear(self.hidden_size, self.hidden_size)
@@ -106,6 +108,7 @@ class DecoderAttention(nn.Module):
 
         # We can use this for visualization later
         attention_scores = nn.functional.softmax(attention_w, dim=-1, dtype=torch.float32).to(wq.dtype)
+        attention_scores = self.attn_dropout(attention_scores)
 
         attention_out = torch.matmul(attention_scores, wv) 
 
@@ -117,6 +120,7 @@ class DecoderAttention(nn.Module):
         attention_out = rearrange(attention_out, 'b h s d -> b s (h d)', h=self.num_heads, s=seq_len, d= self.head_dim)
 
         attention_out = self.o_proj(attention_out)
+        attention_out = self.output_dropout(attention_out)
 
         return attention_out, attention_scores
 
@@ -129,12 +133,14 @@ class DecoderLayer(nn.Module):
         self.outputRmsNorm = RMSNorm(config)
         self.multimodalAttention = DecoderAttention(config)
         self.mlp = DecoderMLP(config)
+        self.dropout = nn.Dropout(config.dropout_prob)
     
     def forward(self, x, attention_mask=None):
         residual = x
 
         x_norm = self.inputRmsNorm(x)
         x, attn_scores = self.multimodalAttention(x_norm, attention_mask)
+        x = self.dropout(x)
 
         x = residual + x
 
@@ -142,6 +148,7 @@ class DecoderLayer(nn.Module):
 
         x_norm = self.outputRmsNorm(x)
         x = self.mlp(x_norm)
+        x = self.dropout(x)
         x = x + residual
 
         return x, attn_scores

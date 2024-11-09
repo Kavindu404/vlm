@@ -64,6 +64,8 @@ class VisionAttention(nn.Module):
         self.embed_dim = config.embed_dim
         self.head_dim = self.embed_dim // self.num_heads
         self.scale = self.head_dim ** -0.5 
+        self.attn_dropout = nn.Dropout(config.attention_dropout)
+        self.output_dropout = nn.Dropout(config.dropout_prob)
 
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim)
@@ -87,6 +89,7 @@ class VisionAttention(nn.Module):
         # Note that I transposed the first and second dims cause then each head can work over all the patches
 
         attention_w = (torch.matmul(wq, wk.transpose(2, 3)) * self.scale) # [bs, num_heads, num_patches, num_patches]
+        attention_w = self.attn_dropout(attention_w)
 
         if attention_w.size() != (bs, self.num_heads, num_patches, num_patches):
             raise ValueError(
@@ -110,6 +113,7 @@ class VisionAttention(nn.Module):
         attention_out = rearrange(attention_out, 'b h p d -> b p (h d)')
 
         attention_out = self.o_proj(attention_out)
+        attention_out = self.output_dropout(attention_out)
 
         return attention_out
 
