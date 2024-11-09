@@ -59,7 +59,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 
             pbar.update(1)
             pbar.set_postfix({
-                'val_loss': f'{current_val_loss:.4f}',
+                'val_loss': f'{current_val_loss:.6f}',
                 'gpu_mem': f'{get_gpu_memory():.2f}GB'
             })
 
@@ -169,6 +169,7 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)), # reshaping to [batch_sz*seq_len, vocab_size]
                 labels.view(-1), # reshaping to [batch_sz*seq_len]
+                label_smoothing=0.1,
                 ignore_index=config.padding_idx
             )
         
@@ -191,7 +192,7 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
     
         pbar.update(1)
         pbar.set_postfix({
-            'train_loss': f'{loss.item():.4f}', 
+            'train_loss': f'{loss.item():.6f}', 
             'gpu_mem': f'{current_mem:.2f}GB',
             'step': global_step
         })
@@ -348,8 +349,8 @@ def main():
         print("Starting initialization...")
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos_val_v3'
-        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v3'
+        run_dir = f'runs/base_model_self_attn_sinPos_val_v4'
+        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v4'
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
@@ -358,7 +359,7 @@ def main():
         tokenizer = get_tokenizer()
         
         wandb.init(
-            project= "base_vlm_self_attn_sinPos_val_v2_1",
+            project= "base_vlm_self_attn_sinPos_val_v4",
             config={
                 "learning_rate": decoder_config.learning_rate,
                 "batch_size": decoder_config.batch_size,
