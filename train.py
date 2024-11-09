@@ -307,10 +307,9 @@ def setup_model(encoder_config, decoder_config, train_loader, device):
     model = DataParallel(model)
     model = torch.compile(
                 model,
-                mode='dafult',
+                mode='default',
                 fullgraph=True, 
-                dynamic=True,   
-                verbose=True     
+                dynamic=True  
             )
     
     optimizer = torch.optim.AdamW(
