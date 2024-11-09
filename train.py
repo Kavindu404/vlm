@@ -90,8 +90,15 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                     
                     tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
                 
+                actual_tokens = []
+                for token in label[0].cpu().tolist(): 
+                    if token == config.eos_token_id:
+                        break
+                    if token not in [config.padding_idx, config.sos_token_id]:
+                        actual_tokens.append(token)
+                
                 caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
-                act_caption = tokenizer.decode(label[1:-1])
+                act_caption = tokenizer.decode(actual_tokens)
                 caption_table.add_data(epoch, caption, act_caption)
                 wandb.log({
                     f'val/caption': caption_table
@@ -104,7 +111,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                 orig_image = orig_image.permute(1, 2, 0).numpy()
                 
                 for idx, (token_id, attention_map) in enumerate(zip(generated_tokens[1:], attention_maps)):
-                    
+
                     if token_id == config.eos_token_id:
                         break
                     token_text = tokenizer.decode([token_id])
@@ -128,7 +135,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                         plt.axis('off')
                         
                         plt.savefig(
-                            artifact_dir / f'{idx}_{token_text}_head_{head}.png',
+                            epoch_dir / f'{idx}_{token_text}_head_{head}.png',
                             bbox_inches='tight',
                             pad_inches=0
                         )
