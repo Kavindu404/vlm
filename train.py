@@ -38,7 +38,7 @@ def no_compile():
     finally:
         torch._dynamo.config.disable = False
 
-def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table, artifact_dir):
+def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table, artifact_dir, temprature=0.7):
 
     with no_compile():
         model.eval()
@@ -91,8 +91,13 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
 
                     for _ in range(config.max_len):
                         logits, attention_scores = model(tokens, image)
+                        logits = logits[0, -1] / temprature
+                        top_k = 50
 
-                        next_token = logits[0, -1].argmax(dim=-1) # We follow a greedy approach where we get the token with the max prob
+                        top_k_logits, top_k_indices = torch.topk(logits, top_k)
+                        probs = torch.softmax(top_k_logits, dim=-1)
+                        next_token_idx = torch.multinomial(probs, num_samples=1)
+                        next_token = top_k_indices[next_token_idx] # Instead of greedy sampling, we do top-k beam sampling
                         generated_tokens.append(next_token.item())
 
                         attention_maps.append(attention_scores[-1].cpu()) # We take the attention map of only the first element of the batch
@@ -100,7 +105,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                         if next_token.item() == config.eos_token_id:
                             break
                         
-                        tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
+                        tokens = torch.cat([tokens, next_token.unsqueeze(0)], dim=1)
                     
                     actual_tokens = []
                     for token in label[0].cpu().tolist(): 
@@ -110,6 +115,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                             actual_tokens.append(token)
                     
                     caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
+                    print(f"The generated Caption: {caption}")
                     act_caption = tokenizer.decode(actual_tokens)
                     caption_table.add_data(epoch, caption, act_caption)
                     wandb.log({
@@ -373,8 +379,8 @@ def main():
         print("Starting initialization...")
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos_val_v6'
-        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v6'
+        run_dir = f'runs/base_model_self_attn_sinPos_val_v8'
+        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v8'
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
@@ -383,7 +389,7 @@ def main():
         tokenizer = get_tokenizer()
         
         wandb.init(
-            project= "base_vlm_self_attn_sinPos_val_v6",
+            project= "base_vlm_self_attn_sinPos_val_v8",
             config={
                 "learning_rate": decoder_config.learning_rate,
                 "batch_size": decoder_config.batch_size,
