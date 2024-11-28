@@ -19,6 +19,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from einops import rearrange
 
+from collections import Counter
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+import math
+
 from dataset import VLMDataset
 from model import MultimodalCaptionGenerator
 from config import VisionConfig, MultimodalConfig
@@ -38,14 +42,83 @@ def no_compile():
     finally:
         torch._dynamo.config.disable = False
 
-def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table, artifact_dir, temprature=0.7):
+def compute_cider(candidate, reference):
+    
+    def preprocess(sent):
+
+        return sent.lower().strip().split()
+    
+    def get_ngrams(tokens, n):
+
+        ngrams = Counter()
+
+        for i in range(len(tokens) - n + 1): # creating n-grams
+
+            ngram = tuple(tokens[i:i+n])
+            ngrams[ngram] += 1
+
+        return ngrams
+    
+    candidate = preprocess(candidate)
+    reference = preprocess(reference)
+    
+    n_scores = []
+
+    for n in range(1, 5):  
+
+        cand_ngrams = get_ngrams(candidate, n)
+        ref_ngrams = get_ngrams(reference, n)
+        
+        # calculating term frequency
+        cand_len = sum(cand_ngrams.values()) or 1 
+        ref_len = sum(ref_ngrams.values()) or 1
+        
+
+        # normalizing
+        cand_tf = {k: v/cand_len for k, v in cand_ngrams.items()}
+        ref_tf = {k: v/ref_len for k, v in ref_ngrams.items()}
+        
+        # since there is only 1 reference, IDF is log (1/2)
+        all_ngrams = set(cand_ngrams.keys()) | set(ref_ngrams.keys())
+        idfs = {ngram: math.log(1.0 / 2) for ngram in all_ngrams} 
+        
+        # computing vectors
+        def to_vec(tf_dict):
+
+            vec = np.zeros(len(idfs))
+
+            for i, (ngram, idf) in enumerate(idfs.items()):
+
+                if ngram in tf_dict:
+                    vec[i] = tf_dict[ngram] * idf
+
+            return vec
+        
+        cand_vec = to_vec(cand_tf)
+        ref_vec = to_vec(ref_tf)
+        
+        # computing cosine similarity
+        norm_cand = np.linalg.norm(cand_vec)
+        norm_ref = np.linalg.norm(ref_vec)
+        
+        if norm_cand == 0 or norm_ref == 0:
+            score = 0
+        else:
+            score = np.dot(cand_vec, ref_vec) / (norm_cand * norm_ref)
+        
+        n_scores.append(score * 10)  # same as the paper
+    
+    return np.mean(n_scores)
+
+def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config, caption_table, artifact_dir, base_temperature=0.7, temp_decay=0.95, min_temperature=0.3):
 
     with no_compile():
+        
         model.eval()
         val_metrics = defaultdict(float)
         num_batches = len(val_loader)
-        fixed_batch_idx = 2 
-        fixed_sample_idx = 5
+        fixed_batch_idx = config.fixed_batch_idx
+        fixed_sample_idx = config.fixed_sample_idx
 
         pbar = tqdm(total=num_batches, desc=f'Val Epoch {epoch}')
         
@@ -63,7 +136,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                 loss = torch.nn.functional.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     labels.view(-1),
-                    label_smoothing=0.1,
+                    label_smoothing=0.10,
                     ignore_index=config.padding_idx
                 )
                 
@@ -76,7 +149,7 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                     'gpu_mem': f'{get_gpu_memory():.2f}GB'
                 })
 
-                if batch_idx == fixed_batch_idx and epoch%10==0:
+                if batch_idx == fixed_batch_idx and epoch%5==0:
 
                     epoch_dir = os.path.join(artifact_dir, f'epoch_{epoch}')
                     Path(epoch_dir).mkdir(parents=True, exist_ok=True)
@@ -89,17 +162,24 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                     
                     print(f"Saving artifacts...")
 
-                    for _ in range(config.max_len):
+                    for i in range(config.max_len):
+
+                        temperature = max(base_temperature * (temp_decay ** i), min_temperature)
+
                         logits, attention_scores = model(tokens, image)
-                        logits = logits[0, -1] / temprature
+                        logits = logits[0, -1] / temperature
                         top_k = 50
+
+                        if len(generated_tokens) > 1:
+
+                            for prev_token in generated_tokens:
+                                logits[prev_token] /= 3.0 # Adding penalty for repitition
 
                         top_k_logits, top_k_indices = torch.topk(logits, top_k)
                         probs = torch.softmax(top_k_logits, dim=-1)
                         next_token_idx = torch.multinomial(probs, num_samples=1)
                         next_token = top_k_indices[next_token_idx] # Instead of greedy sampling, we do top-k beam sampling
                         generated_tokens.append(next_token.item())
-
                         attention_maps.append(attention_scores[-1].cpu()) # We take the attention map of only the first element of the batch
 
                         if next_token.item() == config.eos_token_id:
@@ -135,20 +215,21 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                         token_text = tokenizer.decode([token_id])
                         
                         num_heads = attention_map.size(0)
+                        # if len(attention_maps)==num_heads:
                         for head in range(num_heads):
                             # we take the attention_score for the image tokens of the last token added
-                            token_attention = attention_maps[head][-1][-1, :num_img_tokens] 
+                            token_attention = attention_map[head][-1, :num_img_tokens] 
                             h = w = int(np.sqrt(num_img_tokens))
                             token_attention = rearrange(token_attention, '(h w) -> h w', h=h, w=w)
 
-                            token_attention = torch.tensor(token_attention).unsqueeze(0).unsqueeze(0)  # add batch and channel dims [1, 1, 14, 14]
+                            token_attention = token_attention.clone().detach().unsqueeze(0).unsqueeze(0)  # add batch and channel dims [1, 1, 14, 14]
                             # We upsample the attention map from 14x14 -> 224x224. Note that we have 14x14 patches and attention score for each patch
-                            attention_map = F.interpolate(token_attention, size=(224, 224), mode='bilinear', align_corners=False)
-                            attention_map = attention_map.squeeze().numpy() 
+                            img_attention_map = F.interpolate(token_attention, size=(224, 224), mode='bilinear', align_corners=False)
+                            img_attention_map = img_attention_map.squeeze().numpy() 
                             
                             plt.figure(figsize=(10, 10))
                             plt.imshow(orig_image)
-                            plt.imshow(attention_map, alpha=0.5, cmap='viridis')
+                            plt.imshow(img_attention_map, alpha=0.5, cmap='viridis')
                             plt.title(f'{token_text} - Head {head}')
                             plt.axis('off')
                             
@@ -158,6 +239,8 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                                 pad_inches=0
                             )
                             plt.close()
+                        # else:
+                        #     print(f"Attention Maps: {len(attention_maps)}, num_heads: {num_heads}")
 
     pbar.close()
     val_metrics['loss'] /= num_batches
@@ -198,7 +281,7 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)), # reshaping to [batch_sz*seq_len, vocab_size]
                 labels.view(-1), # reshaping to [batch_sz*seq_len]
-                label_smoothing=0.1,
+                label_smoothing=0.10,
                 ignore_index=config.padding_idx
             )
         
@@ -223,8 +306,13 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
         pbar.set_postfix({
             'train_loss': f'{loss.item():.6f}', 
             'gpu_mem': f'{current_mem:.2f}GB',
-            'step': global_step
+            'learning_rate': f'{current_lr:.6f}'
         })
+
+        epoch_metrics['loss'] += loss.item()
+        epoch_metrics['batch_time'] += batch_time
+        epoch_metrics['gpu_memory'] += current_mem
+        epoch_metrics['learning_rate'] = current_lr
     pbar.close()
 
     val_metrics = None
@@ -245,10 +333,7 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
                             artifact_dir= artifact_dir
                     )
  
-    epoch_metrics['loss'] += loss.item()
-    epoch_metrics['batch_time'] += batch_time
-    epoch_metrics['gpu_memory'] += current_mem
-    epoch_metrics['learning_rate'] = current_lr
+    
     
     global_step += 1
     
@@ -287,7 +372,7 @@ def load_checkpoint(run_dir, model, optimizer, scheduler, scaler):
         start_epoch = checkpoint['epoch'] + 1
         global_step = checkpoint['global_step']
         best_loss = checkpoint['best_loss']
-        print(f"Resuming from epoch {start_epoch}, global_step {global_step}")
+        print(f"Resuming from epoch {start_epoch}, global_step {global_step}, learning_rate: {scheduler.get_last_lr()[0]}")
 
         return start_epoch, global_step, best_loss
     
@@ -333,9 +418,9 @@ def setup_datasets(config, tokenizer):
     return train_loader, val_loader
 
 def setup_model(encoder_config, decoder_config, train_loader, device):
-
+    
     model = MultimodalCaptionGenerator(encoder_config, decoder_config).to(device)
-    model = DataParallel(model)
+    model = DataParallel(model, device_ids=list(range(len(decoder_config.gpu_ids))))
     model = torch.compile(
                 model,
                 mode='default',
@@ -343,19 +428,32 @@ def setup_model(encoder_config, decoder_config, train_loader, device):
                 dynamic=True  
             )
     
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=decoder_config.learning_rate,
-        weight_decay=decoder_config.weight_decay
-    )
+    # Separating encoder and decoder params
+    encoder_params = []
+    decoder_params = []
+    for name, param in model.named_parameters():
+        if 'encoder' in name:
+            encoder_params.append(param)
+        else:
+            decoder_params.append(param)
     
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=decoder_config.learning_rate,
-        epochs=decoder_config.num_epochs,
-        steps_per_epoch=len(train_loader),
-        pct_start=0.1  # 10% warmup
-    )
+    optimizer = torch.optim.AdamW([
+        {'params': encoder_params, 'lr': decoder_config.learning_rate * 0.5},
+        {'params': decoder_params, 'lr': decoder_config.learning_rate}
+    ])
+
+    # Linear warmup before cosine cycles
+    num_training_steps = len(train_loader) * decoder_config.num_epochs
+    num_warmup_steps = int(num_training_steps * decoder_config.warmup_ratio)
+    
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        return max(0.0, 
+                  0.5 * (1 + math.cos(math.pi * (current_step - num_warmup_steps) / 
+                  (num_training_steps - num_warmup_steps))))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     scaler = GradScaler()
     
@@ -374,22 +472,25 @@ def save_checkpoint(checkpoint, is_best, run_dir):
         torch.save(checkpoint, best_path)
 
 def main():
+
+    encoder_config = VisionConfig()
+    decoder_config = MultimodalConfig()
     
     try:
+        
         print("Starting initialization...")
+        os.environ["CUDA_VISIBLE_DEVICES"] = decoder_config.cuda_visible_devices
         device = torch.device("cuda:0")
         
-        run_dir = f'runs/base_model_self_attn_sinPos_val_v8'
-        artifcats_dir = f'artifacts/base_model_self_attn_sinPos_val_v8'
+        run_dir = f'runs/{decoder_config.project_name}'
+        artifcats_dir = f'artifacts/{decoder_config.project_name}'
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
-        encoder_config = VisionConfig()
-        decoder_config = MultimodalConfig()
         tokenizer = get_tokenizer()
         
         wandb.init(
-            project= "base_vlm_self_attn_sinPos_val_v8",
+            project= f"{decoder_config.project_name}",
             config={
                 "learning_rate": decoder_config.learning_rate,
                 "batch_size": decoder_config.batch_size,
@@ -447,8 +548,7 @@ def main():
                 'train/gpu_memory': metrics['gpu_memory'],
                 'val/gpu_memory': val_metrics['gpu_memory'],
                 'epoch': epoch,
-                'global_step': global_step,
-                'learning_rate': optimizer.param_groups[0]['lr']
+                'global_step': global_step
             })             
 
     except Exception as e:
