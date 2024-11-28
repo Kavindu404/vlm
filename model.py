@@ -22,7 +22,10 @@ class MultimodalCaptionGenerator(nn.Module):
 
         merged_embeds = torch.concat([image_embeds, text_embeds], dim=1)
 
-        attention_mask = torch.ones((batch_size, seq_len, seq_len), device=image_embeds.device)
+        attention_mask = torch.zeros((batch_size, seq_len, seq_len), device=image_embeds.device)
+
+        # All the image tokens can attend to each other to contexualize them
+        attention_mask[:, :num_image_tokens, :num_image_tokens] = 1
 
         # Note that all the features of the padding token is 0 from the Embedding look-up table
         # This mask is of shape [batch_size, num_text_tokens]
@@ -30,7 +33,11 @@ class MultimodalCaptionGenerator(nn.Module):
         # Now we need the causal mask for the text generation part
         text_causal_mask = torch.tril(torch.ones((num_text_tokens, num_text_tokens), device=image_embeds.device)).bool()
 
-        attention_mask[:, num_image_tokens:, num_image_tokens:] = text_pad_mask.unsqueeze(-1) & text_causal_mask
+        attention_mask[:, num_image_tokens:, num_image_tokens:] = text_causal_mask.unsqueeze(0) & text_pad_mask.unsqueeze(1)
+
+        # All text tokens can attend to all image tokens
+        attention_mask[:, num_image_tokens:, :num_image_tokens] = text_pad_mask.unsqueeze(-1)
+
         attention_mask = attention_mask.float()
         if attention_mask.size() != (batch_size, seq_len, seq_len):
 
