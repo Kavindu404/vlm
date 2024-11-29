@@ -32,7 +32,14 @@ class ImageEmbeddings(nn.Module):
     def forward(self, x):
 
         _, _, h, w = x.shape
-        patch_embeds = self.patches(x) # This is of shape (bs, embed_dim, num_patches_h, num_patches_w). note num_patches_h = num_patches_w = num_patches
+        try:
+            patch_embeds = self.patches(x)
+        except RuntimeError as e:
+            print("Error in conv operation!")
+            print("Input tensor:", x.shape, x.dtype, x.device)
+            print("Conv weight:", self.patches.weight.shape, self.patches.weight.dtype, self.patches.weight.device)
+            raise e
+        # patch_embeds = self.patches(x) # This is of shape (bs, embed_dim, num_patches_h, num_patches_w). note num_patches_h = num_patches_w = num_patches
         patch_embeds = rearrange(patch_embeds, 'b e h w -> b (h w) e')
         # creating the look-up table of shape (bs, num_patches, embed_dim). 
         # Note that this is like nn.Linear(x) but with nn.Embeddings, rather than multiplying, we create a look up table

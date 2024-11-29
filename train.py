@@ -23,10 +23,10 @@ from collections import Counter
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import math
 
-from dataset import VLMDataset
-from model import MultimodalCaptionGenerator
+from dataset import VLMDataset, VQADataset
+from model import MultimodalCaptionGenerator, MultimodalVQAModel
 from config import VisionConfig, MultimodalConfig
-from preprocess import get_tokenizer
+from preprocess import get_tokenizer, get_vqa_tokenizer
 
 import torch.backends.cudnn as cudnn
 cudnn.benchmark = True
@@ -127,11 +127,12 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
             for batch_idx, batch in enumerate(val_loader):
 
                 images = batch['image'].to(device)
-                tokens = batch['tokens'].to(device)
+                q_tokens = batch['questions'].to(device)
+                a_tokens = batch['answers'].to(device)
                 
-                logits, _ = model(tokens, images)
-                labels = tokens[:, 1:].contiguous()
-                logits = logits[:, config.num_image_tokens:-1, :].contiguous()
+                logits, _ = model(q_tokens, a_tokens, images)
+                labels = a_tokens[:, 1:].contiguous()
+                logits = logits[:, config.num_image_tokens+config.num_q_tokens:-1, :].contiguous()
                 
                 loss = torch.nn.functional.cross_entropy(
                     logits.view(-1, logits.size(-1)),
@@ -155,18 +156,18 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                     Path(epoch_dir).mkdir(parents=True, exist_ok=True)
 
                     image = batch['image'][fixed_sample_idx:fixed_sample_idx+1].to(device)
-                    label = batch['tokens'][fixed_sample_idx:fixed_sample_idx+1].to(device)
+                    q_tokens = batch['questions'][fixed_sample_idx:fixed_sample_idx+1].to(device)
+                    label = batch['answers'][fixed_sample_idx:fixed_sample_idx+1].to(device)
                     tokens = torch.tensor([[config.sos_token_id]]).to(device)
                     generated_tokens = [config.sos_token_id]
                     attention_maps = []
                     
                     print(f"Saving artifacts...")
 
-                    for i in range(config.max_len):
+                    for i in range(config.max_question_len):
 
                         temperature = max(base_temperature * (temp_decay ** i), min_temperature)
-
-                        logits, attention_scores = model(tokens, image)
+                        logits, attention_scores = model(q_tokens, tokens, image)
                         logits = logits[0, -1] / temperature
                         top_k = 50
 
@@ -187,17 +188,26 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                         
                         tokens = torch.cat([tokens, next_token.unsqueeze(0)], dim=1)
                     
+                    actual_q_tokens = []
+
                     actual_tokens = []
                     for token in label[0].cpu().tolist(): 
                         if token == config.eos_token_id:
                             break
                         if token not in [config.padding_idx, config.sos_token_id]:
                             actual_tokens.append(token)
-                    
-                    caption = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
-                    print(f"The generated Caption: {caption}")
-                    act_caption = tokenizer.decode(actual_tokens)
-                    caption_table.add_data(epoch, caption, act_caption)
+
+                    for token in q_tokens.cpu().tolist()[0]:
+                        if token == config.q_end_token_id:
+                            break
+                        if token not in [config.padding_idx, config.q_start_token_id]:
+                            actual_q_tokens.append(token)
+                    question = tokenizer.decode(actual_q_tokens)
+                    correct_answer = tokenizer.decode(actual_tokens)
+                    answer = tokenizer.decode(generated_tokens[1:-1])  # removing SOS and EOS
+                    print(f"Qestion: {question}")
+                    print(f"Answer: {answer}")
+                    caption_table.add_data(epoch, question, answer, correct_answer)
                     wandb.log({
                         f'val/caption': caption_table
                     })
@@ -269,14 +279,15 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
         batch_start_time = time.time()
         
         images = batch['image'].to(device)
-        tokens = batch['tokens'].to(device)
+        q_tokens = batch['questions'].to(device)
+        a_tokens = batch['answers'].to(device)
         
         optimizer.zero_grad()
         
         with autocast():
-            logits, _ = model(tokens, images)
-            labels = tokens[:, 1:].contiguous()
-            logits = logits[:, config.num_image_tokens:-1, :].contiguous()
+            logits, _ = model(q_tokens, a_tokens, images)
+            labels = a_tokens[:, 1:].contiguous()
+            logits = logits[:, config.num_image_tokens+config.num_q_tokens:-1, :].contiguous()
             
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)), # reshaping to [batch_sz*seq_len, vocab_size]
@@ -319,7 +330,7 @@ def train_epoch(epoch, model, dataloader, val_loader, optimizer, scheduler, scal
 
     if val_loader:
 
-        caption_table = wandb.Table(columns=["epoch", "generated_caption", "actual_caption"])
+        caption_table = wandb.Table(columns=["epoch", "Question", "Generated Answer", "Correct Answer"])
 
         val_metrics = validate(
                             epoch= epoch,
@@ -417,6 +428,87 @@ def setup_datasets(config, tokenizer):
         
     return train_loader, val_loader
 
+def setup_vqa_datasets(config, tokenizer):
+
+    train_dataset = VQADataset(
+        image_dir=config.train_image_dir,
+        h5_path=config.train_h5_path,
+        tokenizer=tokenizer,
+        split="train"
+    )
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size= config.batch_size,
+        shuffle= True,
+        num_workers= config.num_workers,
+        pin_memory= True,
+        persistent_workers=True
+    )
+    
+    if hasattr(config, 'val_image_dir') and hasattr(config, 'val_h5_path'):
+        val_dataset = VQADataset(
+            image_dir= config.val_image_dir,
+            h5_path= config.val_h5_path,
+            tokenizer= tokenizer,
+            split= "val"
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size= config.batch_size,
+            shuffle= False,
+            num_workers= config.num_workers,
+            pin_memory= True,
+            persistent_workers=True
+        )
+    else:
+        val_loader = None
+        
+    return train_loader, val_loader
+
+def setup_vqa_model(encoder_config, decoder_config, train_loader, device):
+    
+    model = MultimodalVQAModel(encoder_config, decoder_config).to(device)
+    model = DataParallel(model, device_ids=list(range(len(decoder_config.gpu_ids))))
+    model = torch.compile(
+                model,
+                mode='default',
+                fullgraph=True, 
+                dynamic=True  
+            )
+    
+    # Separating encoder and decoder params
+    encoder_params = []
+    decoder_params = []
+    for name, param in model.named_parameters():
+        if 'encoder' in name:
+            encoder_params.append(param)
+        else:
+            decoder_params.append(param)
+    
+    optimizer = torch.optim.AdamW([
+        {'params': encoder_params, 'lr': decoder_config.learning_rate * 0.5},
+        {'params': decoder_params, 'lr': decoder_config.learning_rate}
+    ])
+
+    # Linear warmup before cosine cycles
+    num_training_steps = len(train_loader) * decoder_config.num_epochs
+    num_warmup_steps = int(num_training_steps * decoder_config.warmup_ratio)
+    
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        return max(0.0, 
+                  0.5 * (1 + math.cos(math.pi * (current_step - num_warmup_steps) / 
+                  (num_training_steps - num_warmup_steps))))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    
+    scaler = GradScaler()
+    
+    return model, optimizer, scheduler, scaler
+
 def setup_model(encoder_config, decoder_config, train_loader, device):
     
     model = MultimodalCaptionGenerator(encoder_config, decoder_config).to(device)
@@ -487,7 +579,7 @@ def main():
         os.makedirs(run_dir, exist_ok=True)
         os.makedirs(artifcats_dir, exist_ok=True)
         
-        tokenizer = get_tokenizer()
+        tokenizer = get_vqa_tokenizer()
         
         wandb.init(
             project= f"{decoder_config.project_name}",
@@ -501,8 +593,8 @@ def main():
             resume=True
         )
         
-        train_loader, val_loader = setup_datasets(decoder_config, tokenizer)
-        model, optimizer, scheduler, scaler = setup_model(encoder_config, decoder_config, train_loader, device)
+        train_loader, val_loader = setup_vqa_datasets(decoder_config, tokenizer)
+        model, optimizer, scheduler, scaler = setup_vqa_model(encoder_config, decoder_config, train_loader, device)
         
         start_epoch, global_step, best_loss = load_checkpoint(
             run_dir,

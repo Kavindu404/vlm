@@ -67,4 +67,71 @@ class MultimodalCaptionGenerator(nn.Module):
 
         return logits, attention_scores
 
+class MultimodalVQAModel(nn.Module):
+    def __init__(self, encoder_config, decoder_config):
+        super().__init__()
+        self.image_encoder = VisionTransformer(encoder_config)
+        self.multimodal_projector = MultimodalProjector(decoder_config)
+        self.decoder = MultimodalDecoder(decoder_config)
+        self.decoder_pos_embeds = PosEmbeddings(decoder_config)
+        self.output_projection = nn.Linear(decoder_config.hidden_size, decoder_config.vocab_size)
+    
+    def _merge_input_embeds(self, image_embeds, q_embeds, a_embeds):
+        
+        batch_size = image_embeds.shape[0]
+        num_image_tokens = image_embeds.shape[1]
+        num_q_tokens = q_embeds.shape[1]
+        num_a_tokens = a_embeds.shape[1]
+        seq_len = num_image_tokens + num_q_tokens + num_a_tokens
+
+        pref_len = num_image_tokens + num_q_tokens
+
+        merged_embeds = torch.concat([image_embeds, q_embeds, a_embeds], dim=1)
+
+        attention_mask = torch.zeros((batch_size, seq_len, seq_len), device=image_embeds.device)
+
+        # All the image tokens can attend to each other to contexualize them
+        attention_mask[:, :pref_len, :pref_len] = 1
+
+        # Note that all the features of the padding token is 0 from the Embedding look-up table
+        # This mask is of shape [batch_size, num_text_tokens]
+        text_pad_mask = (a_embeds.sum(dim=-1) != 0).bool().to(image_embeds.device)
+        # Now we need the causal mask for the text generation part
+        text_causal_mask = torch.tril(torch.ones((num_a_tokens, num_a_tokens), device=image_embeds.device)).bool()
+
+        attention_mask[:, pref_len:, pref_len:] = text_causal_mask.unsqueeze(0) & text_pad_mask.unsqueeze(1)
+
+        # All text tokens can attend to all image tokens
+        attention_mask[:, pref_len:, :pref_len] = text_pad_mask.unsqueeze(-1)
+
+        attention_mask = attention_mask.float()
+        if attention_mask.size() != (batch_size, seq_len, seq_len):
+
+            raise ValueError(
+                f"Size mismatch: Attention Mask: {attention_mask.size()}, expected: {(batch_size, seq_len, seq_len)}"
+            )
+  
+        return merged_embeds, attention_mask
+    
+    def forward(self, q_tokens, a_tokens, imgs):
+
+        q_embeds = self.decoder.get_input_embeddings()(q_tokens)
+        a_embeds = self.decoder.get_input_embeddings()(a_tokens)
+        img_patches = self.image_encoder(imgs)
+
+        img_embeds = self.multimodal_projector(img_patches)
+
+        input_embeds, attention_mask = self._merge_input_embeds(img_embeds, q_embeds, a_embeds)
+
+        input_embeds = self.decoder_pos_embeds(input_embeds)
+
+        outputs, attention_scores = self.decoder(
+            input_embeds,
+            attention_mask
+        )
+
+        logits = self.output_projection(outputs)
+
+        return logits, attention_scores
+
     

@@ -52,6 +52,7 @@ class DecoderMLP(nn.Module):
         self.config = config
         self.hidden_size = self.config.hidden_size
         self.inter_dim = self.config.inter_dim
+        self.weight_dropout = nn.Dropout(0.4)
 
         self.gate_proj = nn.Linear(self.hidden_size, self.inter_dim)
         self.up_proj = nn.Linear(self.hidden_size, self.inter_dim)
@@ -59,7 +60,7 @@ class DecoderMLP(nn.Module):
     
     def forward(self, x):
         # x here is of shape [bs, num_patches, hidden_size]
-        y = self.gate_proj(x) # [bs, num_patches, inter_dim]
+        y = self.gate_proj(self.weight_dropout(x)) # [bs, num_patches, inter_dim]
         y = nn.functional.gelu(y, approximate='tanh')
         u = self.up_proj(x) # [bs, num_patches, inter_dim]
         y = y * u # element-wise
