@@ -5,7 +5,7 @@ class VisionConfig:
         self.embed_dim = 384
         self.img_sz = 224
         self.inter_size = 512
-        self.num_heads = 6
+        self.num_heads = 4
         self.num_encoder_layers = 3
         self.layer_norm_eps = 1e-6
         self.in_channels = 3
@@ -16,13 +16,13 @@ class MultimodalConfig:
 
     def __init__(self):
 
-        self.project_name = "base_vqa_self_attn_sinPos_v1"
+        self.project_name = "base_vqa_self_attn_sinPos_v3"
         self.eps = 1e-6
-        self.hidden_size = 768
+        self.hidden_size = 512
         self.seq_len = 392
         self.max_len = 196
-        self.inter_dim = 2048
-        self.num_heads = 8
+        self.inter_dim = 1024
+        self.num_heads = 4
         self.vocab_size = 50261
         self.padding_idx = 50258
         self.sos_token_id = 50257
@@ -37,19 +37,19 @@ class MultimodalConfig:
         self.num_a_tokens = 48
         self.max_question_len = 48
 
-        self.learning_rate = 3e-4
+        self.learning_rate = 1e-5
         self.weight_decay = 0.1
         self.warmup_ratio = 0.1
-        self.num_epochs = 500
-        self.dropout_prob = 0.47
-        self.attention_dropout = 0.47
+        self.num_epochs = 200
+        self.dropout_prob = 0.5
+        self.attention_dropout = 0.5
 
         self.fixed_batch_idx = 1
         self.fixed_sample_idx = 2
         
         self.train_image_dir = "/unity/g1/kgalla/datasets/vqa_dataset/images"
         self.train_h5_path = "/unity/g1/kgalla/datasets/vqa_dataset/vqa_train.h5"
-        self.batch_size = 128
+        self.batch_size = 64
         self.num_workers = 128
 
         self.val_image_dir = "/unity/g1/kgalla/datasets/vqa_dataset/images"

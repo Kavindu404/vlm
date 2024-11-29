@@ -4,3 +4,4 @@ runs/
 __pycache__/
 attention_mask.png
 wandb/
+config.py
