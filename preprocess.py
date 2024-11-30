@@ -1,11 +1,14 @@
 import json
 import h5py
+import os
 import tiktoken
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
+import multiprocessing as mp
+from functools import partial
 
 
 
@@ -92,114 +95,171 @@ def prepare_dataset(tokenizer, annotation_path, output_path, max_len=196):
             data=np.array(list(image_captions.keys()), dtype=np.int32)
         )
 
-def prepare_vqa_dataset(tokenizer, data_path, output_path, max_question_len=48, max_answer_len=48):
-    # Read the text file
-    qa_pairs = []
-    with open(data_path, 'r') as f:
-        next(f)
-        for line in f:
+def save_qa_batch(batch_data, output_path, lock):
+    """Process a batch of image QA pairs"""
+    with lock:
+        with h5py.File(output_path, 'a') as h5f:
+            for image_id, qa_data in batch_data:
+                questions_array = np.array(qa_data['questions'], dtype=np.int32)
+                answers_array = np.array(qa_data['answers'], dtype=np.int32)
+                
+                if f'questions/{image_id}' not in h5f:
+                    h5f['questions'].create_dataset(
+                        str(image_id),
+                        data=questions_array,
+                        compression='gzip',
+                        compression_opts=9
+                    )
+                    
+                    h5f['answers'].create_dataset(
+                        str(image_id),
+                        data=answers_array,
+                        compression='gzip',
+                        compression_opts=9
+                    )
 
-            question_answer, image_id = line.rsplit(',', 1)
-
-            question, answer = question_answer.split(',', 1)
-            qa_pairs.append({
-                'question': question.strip(),
-                'answer': answer.strip(),
-                'image_id': image_id.strip()
-            })
+def prepare_gqa_dataset(tokenizer, questions_dir, split, output_path, max_question_len=48, max_answer_len=48):
+    image_qa_pairs = {}
     
+    # Process questions
+    if split == 'train':
+        for i in range(1):
+            file_path = os.path.join(questions_dir, f'train_all_questions_{i}.json')
+            print(f"\nProcessing {file_path}")
+            
+            with open(file_path, 'r') as f:
+                questions_data = json.load(f)
+                
+            image_qa_pairs, skipped = process_questions(questions_data, image_qa_pairs, tokenizer, 
+                                                      max_question_len, max_answer_len)
+    
+    elif split == 'val':
+        file_path = os.path.join(questions_dir, 'val_all_questions.json')
+        print(f"\nProcessing {file_path}")
+        
+        with open(file_path, 'r') as f:
+            questions_data = json.load(f)
+            
+        image_qa_pairs, skipped = process_questions(questions_data, image_qa_pairs, tokenizer, 
+                                                  max_question_len, max_answer_len)
+    
+    else:
+        raise ValueError("Split must be either 'train' or 'val'")
+
+    # Initialize H5 file with structure first
     with h5py.File(output_path, 'w') as h5f:
-        questions_group = h5f.create_group('questions')
-        answers_group = h5f.create_group('answers')
+        h5f.create_group('questions')
+        h5f.create_group('answers')
         metadata = h5f.create_group('metadata')
 
+        # Set metadata attributes
         metadata.attrs['max_question_length'] = max_question_len
         metadata.attrs['max_answer_length'] = max_answer_len
-        metadata.attrs['pad_token'] = 50258  
-        metadata.attrs['start_token'] = 50257  
-        metadata.attrs['eos_token'] = 50256 
-        metadata.attrs['question_start'] = 50259  
-        metadata.attrs['question_end'] = 50260 
+        metadata.attrs['pad_token'] = 50258
+        metadata.attrs['start_token'] = 50257
+        metadata.attrs['eos_token'] = 50256
+        metadata.attrs['question_start'] = 50259
+        metadata.attrs['question_end'] = 50260
+        metadata.attrs['num_image_tokens'] = 196
+        metadata.attrs['total_sequence_length'] = 196 + max_question_len
         
-        image_qa_pairs = {}
-        skipped = 0
-        
-        for item in tqdm(qa_pairs):
-            image_id = item['image_id']
-            question = item['question']
-            answer = item['answer']
-            
-            # Encode question: <startofquestion> + question + <endofquestion> + <pad>
-            q_tokens = [50259]  # <|startofquestion|>
-            q_tokens += tokenizer.encode(question)
-            q_tokens += [50260]  # <|endofquestion|>
-            
-            # Encode answer: <startoftext> + answer + <endoftext> + <pad>
-            a_tokens = [50257]  # <|startoftext|>
-            a_tokens += tokenizer.encode(answer)
-            a_tokens += [50256]  # <|endoftext|>
-            
-            if len(q_tokens) > max_question_len or len(a_tokens) > max_answer_len:
-                skipped += 1
-                continue
-                
-            # Pad sequences
-            q_tokens.extend([50258] * (max_question_len - len(q_tokens)))
-            a_tokens.extend([50258] * (max_answer_len - len(a_tokens)))
-            
-            if image_id not in image_qa_pairs:
-                image_qa_pairs[image_id] = {
-                    'questions': [],
-                    'answers': []
-                }
-            image_qa_pairs[image_id]['questions'].append(q_tokens)
-            image_qa_pairs[image_id]['answers'].append(a_tokens)
-        
-        print(f"Skipped {skipped} sequences longer than max length")
-
-        for image_id, qa_data in tqdm(image_qa_pairs.items(), desc="Saving to H5"):
-            questions_array = np.array(qa_data['questions'], dtype=np.int32)
-            answers_array = np.array(qa_data['answers'], dtype=np.int32)
-            
-            questions_group.create_dataset(
-                str(image_id),
-                data=questions_array,
-                compression='gzip',
-                compression_opts=9
-            )
-            
-            answers_group.create_dataset(
-                str(image_id),
-                data=answers_array,
-                compression='gzip',
-                compression_opts=9
-            )
-        
+        # Save image IDs
         metadata.create_dataset(
             'image_ids',
             data=np.array(list(image_qa_pairs.keys()), dtype='S')
         )
         
-        metadata.attrs['num_image_tokens'] = 196  
-        metadata.attrs['total_sequence_length'] = 196 + max_question_len 
+        # Save image paths
+        for image_id, qa_data in image_qa_pairs.items():
+            metadata.attrs[f'image_path_{image_id}'] = qa_data['image_path'].encode('utf-8')
 
-
-def analyze_sequence_lengths(tokenizer, csv_path):
-
-    data = pd.read_csv(csv_path)
+    # Prepare data for parallel processing
+    items = list(image_qa_pairs.items())
+    num_cores = min(mp.cpu_count(), 32)  # Limit cores if needed
+    batch_size = max(1, len(items) // (num_cores * 4))
+    batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
     
+    print(f"Processing {len(batches)} batches using {num_cores} cores")
+    
+    # Create a lock for H5 file access
+    lock = mp.Manager().Lock()
+    
+    # Create pool and process batches
+    with mp.Pool(num_cores) as pool:
+        save_func = partial(save_qa_batch, output_path=output_path, lock=lock)
+        list(tqdm(pool.imap(save_func, batches), total=len(batches), desc="Saving to H5"))
+
+    print("\nDataset preparation completed!")
+    print(f"Total images processed: {len(image_qa_pairs)}")
+    print(f"Total QA pairs skipped: {skipped}")
+
+    return image_qa_pairs
+
+def process_questions(questions_data, image_qa_pairs, tokenizer, max_question_len, max_answer_len):
+    """Helper function to process questions and build image_qa_pairs"""
+    skipped = 0
+    for question_id, question_info in tqdm(questions_data.items()):
+        image_id = question_info['imageId']
+        question = question_info['question']
+        answer = question_info['fullAnswer']
+        
+        # Encode question
+        q_tokens = [50259]  # <|startofquestion|>
+        q_tokens += tokenizer.encode(question)
+        q_tokens += [50260]  # <|endofquestion|>
+        
+        # Encode answer
+        a_tokens = [50257]  # <|startoftext|>
+        a_tokens += tokenizer.encode(answer)
+        a_tokens += [50256]  # <|endoftext|>
+        
+        if len(q_tokens) > max_question_len or len(a_tokens) > max_answer_len:
+            skipped += 1
+            continue
+            
+        # Pad sequences
+        q_tokens.extend([50258] * (max_question_len - len(q_tokens)))
+        a_tokens.extend([50258] * (max_answer_len - len(a_tokens)))
+        
+        if image_id not in image_qa_pairs:
+            # Assuming images are in 'images' folder inside questions_dir
+            image_qa_pairs[image_id] = {
+                'questions': [],
+                'answers': [],
+                'image_path': os.path.join('images', f"{image_id}.jpg")
+            }
+        
+        image_qa_pairs[image_id]['questions'].append(q_tokens)
+        image_qa_pairs[image_id]['answers'].append(a_tokens)
+    return image_qa_pairs, skipped
+
+
+def analyze_sequence_lengths(tokenizer, questions_dir):
     question_lengths = []
     answer_lengths = []
     
-    for _, row in tqdm(data.iterrows(), total=len(data)):
-        question = row['question']
-        answer = row['answer']
+    # Process all training question files
+    for i in range(2):  # 0-2 for train_all_questions
+        file_path = os.path.join(questions_dir, f'train_all_questions_{i}.json')
         
-        question_tokens = [50259] + tokenizer.encode(question) + [50260]
-        answer_tokens = [50257] + tokenizer.encode(answer) + [50256]
-        
-        question_lengths.append(len(question_tokens))
-        answer_lengths.append(len(answer_tokens))
+        print(f"\nProcessing {file_path}")
+        maxlen = (0, 0)
+        with open(file_path, 'r') as f:
+            questions_data = json.load(f)
+            
+        for question_id, question_info in tqdm(questions_data.items()):
+            question = question_info['question']
+            answer = question_info['fullAnswer']
+            
+            question_tokens = [50259] + tokenizer.encode(question) + [50260]
+            answer_tokens = [50257] + tokenizer.encode(answer) + [50256]
+            
+            question_lengths.append(len(question_tokens))
+            answer_lengths.append(len(answer_tokens))
+
+        maxlen = max(maxlen, (max(question_lengths), max(answer_lengths)))
+        print(f"After processing {file_path}, max lengths are: Questions: {maxlen[0]}, Answers: {maxlen[1]}")
+            
     
     question_lengths = np.array(question_lengths)
     answer_lengths = np.array(answer_lengths)
@@ -250,11 +310,11 @@ if __name__ == "__main__":
     # prepare_dataset(tokenizer, train_annotation_path, train_output_path)
     # prepare_dataset(tokenizer, val_annotation_path, val_output_path)
 
-    train_path = "/unity/g1/kgalla/datasets/vqa_dataset/data_train.csv"
-    eval_path = "/unity/g1/kgalla/datasets/vqa_dataset/data_eval.csv"
+    # train_path = "/unity/g1/kgalla/datasets/vqa_dataset/data_train.csv"
+    # eval_path = "/unity/g1/kgalla/datasets/vqa_dataset/data_eval.csv"
 
-    train_output_path = "/unity/g1/kgalla/datasets/vqa_dataset/vqa_train.h5"
-    eval_output_path = "/unity/g1/kgalla/datasets/vqa_dataset/vqa_eval.h5"
+    # train_output_path = "/unity/g1/kgalla/datasets/vqa_dataset/vqa_train.h5"
+    # eval_output_path = "/unity/g1/kgalla/datasets/vqa_dataset/vqa_eval.h5"
 
     # print("Analyzing training set:")
     # train_q_lens, train_a_lens = analyze_sequence_lengths(tokenizer, train_path)
@@ -270,6 +330,20 @@ if __name__ == "__main__":
     # print(f"\nRecommended max_len (maximum length across all sets): {overall_max}")
 
     tokenizer = get_vqa_tokenizer()
-    prepare_vqa_dataset(tokenizer, train_path, train_output_path)
-    prepare_vqa_dataset(tokenizer, eval_path, eval_output_path)
+    # prepare_vqa_dataset(tokenizer, train_path, train_output_path)
+    # prepare_vqa_dataset(tokenizer, eval_path, eval_output_path)
+    # analyze_sequence_lengths(tokenizer, "/unity/g1/kgalla/datasets/gqa//train_all_questions/")
 
+    prepare_gqa_dataset(
+        tokenizer=tokenizer,
+        questions_dir='/unity/g1/kgalla/datasets/gqa/train_all_questions',
+        split='train',
+        output_path='/unity/g1/kgalla/datasets/gqa/gqa_train.h5'
+    )
+
+    prepare_gqa_dataset(
+        tokenizer=tokenizer,
+        questions_dir='/unity/g1/kgalla/datasets/gqa',
+        split='val', 
+        output_path='/unity/g1/kgalla/datasets/gqa/gqa_val.h5'
+    )

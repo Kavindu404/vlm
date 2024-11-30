@@ -6,17 +6,17 @@ class VisionConfig:
         self.img_sz = 224
         self.inter_size = 512
         self.num_heads = 4
-        self.num_encoder_layers = 3
+        self.num_encoder_layers = 6
         self.layer_norm_eps = 1e-6
         self.in_channels = 3
-        self.dropout_prob = 0.5
-        self.attention_dropout = 0.5
+        self.dropout_prob = 0.3
+        self.attention_dropout = 0.3
 
 class MultimodalConfig:
 
     def __init__(self):
 
-        self.project_name = "base_vqa_self_attn_sinPos_v3"
+        self.project_name = "base_vqa_self_attn_sinPos_gqa_v1"
         self.eps = 1e-6
         self.hidden_size = 512
         self.seq_len = 392
@@ -29,7 +29,7 @@ class MultimodalConfig:
         self.eos_token_id = 50256
         self.q_start_token_id = 50259
         self.q_end_token_id = 50260
-        self.num_decoder_layers = 3
+        self.num_decoder_layers = 8
         self.emb_dim = 384
         self.proj_dim = self.hidden_size
         self.num_image_tokens = 196
@@ -40,20 +40,20 @@ class MultimodalConfig:
         self.learning_rate = 1e-5
         self.weight_decay = 0.1
         self.warmup_ratio = 0.1
-        self.num_epochs = 200
-        self.dropout_prob = 0.5
-        self.attention_dropout = 0.5
+        self.num_epochs = 2000
+        self.dropout_prob = 0.3
+        self.attention_dropout = 0.3
 
         self.fixed_batch_idx = 1
         self.fixed_sample_idx = 2
         
-        self.train_image_dir = "/unity/g1/kgalla/datasets/vqa_dataset/images"
-        self.train_h5_path = "/unity/g1/kgalla/datasets/vqa_dataset/vqa_train.h5"
-        self.batch_size = 64
-        self.num_workers = 128
+        self.train_image_dir = "/unity/g1/kgalla/datasets/gqa/images"
+        self.train_h5_path = "/unity/g1/kgalla/datasets/gqa/gqa_train.h5"
+        self.batch_size = 196
+        self.num_workers = 164
 
-        self.val_image_dir = "/unity/g1/kgalla/datasets/vqa_dataset/images"
-        self.val_h5_path = "/unity/g1/kgalla/datasets/vqa_dataset/vqa_eval.h5"
+        self.val_image_dir = "/unity/g1/kgalla/datasets/gqa/images"
+        self.val_h5_path = "/unity/g1/kgalla/datasets/gqa/gqa_val.h5"
 
         self.gpu_ids = [0, 1, 2, 3]
         self.cuda_visible_devices = "0,1,2,3"

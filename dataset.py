@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as T
+import os
 
 class VLMDataset(Dataset):
 
@@ -112,7 +113,12 @@ class VQADataset(Dataset):
     def __getitem__(self, idx):
         img_id = self.image_ids[idx]
         
-        img_path = f"{self.image_dir}/{img_id}.png"
+        if os.path.exists(f"{self.image_dir}/{img_id}.jpg"):
+            img_path = f"{self.image_dir}/{img_id}.jpg"
+        elif os.path.exists(f"{self.image_dir}/{img_id}.png"):
+            img_path = f"{self.image_dir}/{img_id}.png"
+        else:
+            raise FileNotFoundError(f"No image found for ID {img_id} with jpg or png extension")
         image = Image.open(img_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
