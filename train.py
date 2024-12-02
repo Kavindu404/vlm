@@ -36,7 +36,7 @@ import torch._dynamo
 
 @contextmanager
 def no_compile():
-    torch._dynamo.config.disable = True
+    torch._dynamo.config.disable = True 
     try:
         yield
     finally:
@@ -232,9 +232,9 @@ def validate(epoch, model, val_loader, tokenizer, device, num_img_tokens, config
                             plt.imshow(img_attention_map, alpha=0.5, cmap='viridis')
                             plt.title(f'{token_text} - Head {head}')
                             plt.axis('off')
-                            
+                            safe_token_text = token_text.replace('/', '_').replace('\\', '_')
                             plt.savefig(
-                                os.path.join(epoch_dir, f'{idx}_{token_text}_head_{head}.png'),
+                                os.path.join(epoch_dir, f'{idx}_{safe_token_text}_head_{head}.png'),
                                 bbox_inches='tight',
                                 pad_inches=0
                             )
