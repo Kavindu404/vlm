@@ -1,4 +1,5 @@
 artifacts/
+inferece_results/*
 runs/
 .venv/
 __pycache__/
