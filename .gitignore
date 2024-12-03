@@ -6,3 +6,4 @@ attention_mask.png
 wandb/
 config.py 
 /unity/g1/kgalla/projects/vlm/config.py
+inference_results/
