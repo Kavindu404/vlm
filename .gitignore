@@ -1,5 +1,5 @@
 artifacts/
-inferece_results/
+inferece_results/*/*.png
 runs/
 .venv/
 __pycache__/
